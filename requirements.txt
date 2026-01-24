@@ -1,0 +1,117 @@
+streamlit
+yt-dlp
+openai
+
+
+
+Product Name (working):
+
+“One Video → Everywhere AI”
+
+One-line pitch (this sells):
+
+Turn one YouTube video into a week of ready-to-post content in under 5 minutes.
+
+If a stranger understands this in 5 seconds → you can sell it.
+
+
+
+People already spend money on:
+
+Social media managers
+
+Content agencies
+
+Manual repurposing tools
+
+Virtual assistants
+
+Your tool:
+
+Replaces hours of work
+
+Costs way less
+
+Gives immediate output
+
+Requires zero learning
+
+This hits the sweet spot:
+👉 Creators with time scarcity but not enterprise budgets.
+
+
+
+
+✅ CORE PIPELINE (NON-NEGOTIABLE)
+YouTube Link
+↓
+Transcript (cleaned)
+↓
+Summary
+↓
+Platform-specific content
+↓
+Copy / Export
+
+
+
+You’re building:
+
+A tool that helps technical creators look competent without extra effort
+
+
+Next upgrades (in order):-
+Copy buttons
+Tone selector
+Niche positioning (“Tech content repurposer”)
+Simple landing page
+
+
+Transcript
+↓
+Key Takeaways
+↓
+Common Mistakes
+↓
+Choose Platform:
+[ Twitter ] [ LinkedIn ] [ Reels ]
+↓
+Copy / Use Content
+
+YouTube link
+↓
+Audio download
+↓
+Whisper transcription
+↓
+raw_transcript saved
+↓
+refined_transcript generated
+↓
+takeaways generated
+↓
+mistakes generated
+↓
+social content generation
+
+
+
+
+NEW PIPELINE (IMPORTANT)
+Long video (30–60 min)
+↓
+Fast transcription (segments)
+↓
+Pick high-value chunks only
+↓
+Merge into short “analysis transcript”
+↓
+Generate insights + content
+
+
+
+streamlit
+yt-dlp
+openai-whisper
+torch
+ffmpeg-python
