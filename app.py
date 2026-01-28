@@ -28,124 +28,121 @@ for key in [
     "linkedin_content",
     "reel_content",
 ]:
-    if key not in st.session_state:
-        st.session_state[key] = None
+    st.session_state.setdefault(key, None)
 
 
 # ======================
-# LOAD WHISPER ONCE (FAST + CLOUD SAFE)
+# LOAD WHISPER
 # ======================
 @st.cache_resource
 def load_whisper_model():
-    return WhisperModel(
-        "tiny",
-        device="cpu",
-        compute_type="int8",
-    )
+    return WhisperModel("tiny", device="cpu", compute_type="int8")
 
 
 # ======================
-# UI – HEADER
-# ======================
-st.title("AI Content Repurposer")
-st.caption("Turn long YouTube videos into fast, useful insights")
-st.caption("Smart analysis → Insights → Content")
-
-youtube_url = st.text_input("YouTube video link")
-
-st.caption(
-    "This tool analyzes only the most important parts of a video for speed. "
-    "Works well even for long videos (20–60+ minutes)."
-)
-
-
-# ======================
-# AUDIO DOWNLOAD
+# DOWNLOAD AUDIO
 # ======================
 def download_audio(url: str) -> str:
     temp_dir = tempfile.mkdtemp()
-    audio_path = os.path.join(temp_dir, "audio.%(ext)s")
+    output = os.path.join(temp_dir, "audio.%(ext)s")
 
     ydl_opts = {
         "format": "bestaudio/best",
-        "outtmpl": audio_path,
+        "outtmpl": output,
         "quiet": True,
         "noplaylist": True,
-        "retries": 3,
-        "socket_timeout": 30,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-            }
-        ],
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+        }],
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        audio_file = ydl.prepare_filename(info)
-        audio_file = audio_file.rsplit(".", 1)[0] + ".mp3"
-
-    return audio_file
+        file_path = ydl.prepare_filename(info)
+        return file_path.rsplit(".", 1)[0] + ".mp3"
 
 
 # ======================
-# SMART SEGMENT EXTRACTION
+# IMPORTANT SEGMENTS
 # ======================
 IMPORTANT_KEYWORDS = [
     "step", "important", "remember", "key", "mistake",
     "note", "first", "second", "finally", "example"
 ]
 
-
-def extract_important_segments(segments, max_chars=3000) -> str:
+def extract_important_segments(segments, max_chars=3000):
     collected = ""
-
     for seg in segments:
         text = seg["text"].strip()
-
         if len(text.split()) < 6:
             continue
-
         if any(k in text.lower() for k in IMPORTANT_KEYWORDS):
             collected += text + " "
-
         if len(collected) >= max_chars:
             break
-
     return collected.strip()
 
 
 # ======================
-# TRANSCRIPTION PIPELINE
+# UI
+# ======================
+st.title("AI Content Repurposer")
+st.caption("Turn long videos into fast, useful insights")
+
+youtube_url = st.text_input("YouTube video link (optional)")
+uploaded_file = st.file_uploader(
+    "Or upload a video/audio file",
+    type=["mp4", "mp3", "wav", "m4a", "mov"]
+)
+
+st.info(
+    "If a YouTube video can’t be downloaded due to restrictions, "
+    "upload the video or audio file directly."
+)
+
+
+# ======================
+# MAIN PIPELINE (ONE BUTTON)
 # ======================
 if st.button("🎧 Analyze Video"):
-    if not youtube_url:
-        st.error("Please paste a YouTube link.")
-    else:
-        try:
-            with st.spinner("Downloading audio..."):
+
+    if not youtube_url and not uploaded_file:
+        st.error("Please provide a YouTube link or upload a file.")
+        st.stop()
+
+    try:
+        # -------- SOURCE --------
+        if uploaded_file:
+            with st.spinner("Processing uploaded file..."):
+                suffix = os.path.splitext(uploaded_file.name)[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(uploaded_file.read())
+                    audio_path = tmp.name
+        else:
+            with st.spinner("Downloading audio from YouTube..."):
                 audio_path = download_audio(youtube_url)
 
-            with st.spinner("Transcribing key segments only..."):
-                model = load_whisper_model()
-                segments, info = model.transcribe(audio_path)
+        # -------- TRANSCRIBE --------
+        with st.spinner("Transcribing key segments..."):
+            model = load_whisper_model()
+            segments, _ = model.transcribe(audio_path)
+            result = {"segments": [{"text": s.text} for s in segments]}
 
-                result = {
-                    "segments": [{"text": seg.text} for seg in segments]
-                }
+        important_text = extract_important_segments(result["segments"])
+        st.session_state.raw_transcript = important_text
 
-            important_text = extract_important_segments(result["segments"])
-            st.session_state.raw_transcript = important_text
+        with st.spinner("Extracting what matters..."):
+            st.session_state.refined_transcript = generate_text(
+                refined_transcript_prompt(important_text)
+            )
 
-            with st.spinner("Extracting what actually matters..."):
-                st.session_state.refined_transcript = generate_text(
-                    refined_transcript_prompt(important_text)
-                )
-
-        except Exception as e:
-            st.error("Something went wrong during processing.")
-            st.exception(e)
+    except Exception:
+        st.warning(
+            "🚫 This video can’t be processed automatically.\n\n"
+            "👉 Please upload the video or audio file instead."
+        )
+        st.stop()
 
 
 # ======================
@@ -158,23 +155,20 @@ if st.session_state.refined_transcript:
 
     col1, col2, col3 = st.columns(3)
 
-    with col1:
-        if st.button("💡 Key Insights"):
-            st.session_state.takeaways = generate_text(
-                key_takeaways_prompt(st.session_state.refined_transcript)
-            )
+    if col1.button("💡 Key Insights"):
+        st.session_state.takeaways = generate_text(
+            key_takeaways_prompt(st.session_state.refined_transcript)
+        )
 
-    with col2:
-        if st.button("🚫 Common Mistakes"):
-            st.session_state.mistakes = generate_text(
-                mistakes_prompt(st.session_state.refined_transcript)
-            )
+    if col2.button("🚫 Common Mistakes"):
+        st.session_state.mistakes = generate_text(
+            mistakes_prompt(st.session_state.refined_transcript)
+        )
 
-    with col3:
-        if st.button("🛠️ Practical Application"):
-            st.session_state.application = generate_text(
-                application_prompt(st.session_state.refined_transcript)
-            )
+    if col3.button("🛠️ Practical Application"):
+        st.session_state.application = generate_text(
+            application_prompt(st.session_state.refined_transcript)
+        )
 
     if st.session_state.takeaways:
         st.subheader("💡 Key Insights")
@@ -188,48 +182,37 @@ if st.session_state.refined_transcript:
         st.subheader("🛠️ Practical Application")
         st.write(st.session_state.application)
 
-    with st.expander("📄 View Extracted Transcript"):
-        st.write(st.session_state.raw_transcript)
-
 
 # ======================
-# SOCIAL MEDIA CONTENT
+# SOCIAL CONTENT
 # ======================
 if st.session_state.refined_transcript:
     st.divider()
     st.header("✍️ Turn This Into Content")
 
-    col1, col2, col3 = st.columns(3)
+    if st.button("🐦 Twitter Thread"):
+        st.session_state.twitter_content = generate_text(
+            twitter_prompt(st.session_state.refined_transcript)
+        )
 
-    with col1:
-        if st.button("🐦 Twitter Thread"):
-            st.session_state.twitter_content = generate_text(
-                twitter_prompt(st.session_state.refined_transcript)
-            )
+    if st.button("💼 LinkedIn Post"):
+        st.session_state.linkedin_content = generate_text(
+            linkedin_prompt(st.session_state.refined_transcript)
+        )
 
-    with col2:
-        if st.button("💼 LinkedIn Post"):
-            st.session_state.linkedin_content = generate_text(
-                linkedin_prompt(st.session_state.refined_transcript)
-            )
-
-    with col3:
-        if st.button("🎥 Reel Hooks"):
-            st.session_state.reel_content = generate_text(
-                reel_prompt(st.session_state.refined_transcript)
-            )
+    if st.button("🎥 Reel Hooks"):
+        st.session_state.reel_content = generate_text(
+            reel_prompt(st.session_state.refined_transcript)
+        )
 
     if st.session_state.twitter_content:
-        st.subheader("🐦 Twitter/X Thread")
-        st.text_area("", st.session_state.twitter_content, height=220)
+        st.text_area("Twitter/X", st.session_state.twitter_content, height=220)
 
     if st.session_state.linkedin_content:
-        st.subheader("💼 LinkedIn Post")
-        st.text_area("", st.session_state.linkedin_content, height=220)
+        st.text_area("LinkedIn", st.session_state.linkedin_content, height=220)
 
     if st.session_state.reel_content:
-        st.subheader("🎥 Reel Hooks")
-        st.text_area("", st.session_state.reel_content, height=150)
+        st.text_area("Reels", st.session_state.reel_content, height=150)
 
 
 # ======================
@@ -237,7 +220,4 @@ if st.session_state.refined_transcript:
 # ======================
 st.divider()
 if st.button("🔄 Start Over"):
-    for key in list(st.session_state.keys()):
-        st.session_state[key] = None
-
-st.caption("Optimized for long videos, fast insights, and real creators.")
+    st.session_state.clear()
