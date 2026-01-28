@@ -2,7 +2,7 @@ import os
 import tempfile
 import streamlit as st
 import yt_dlp
-import whisper
+from faster_whisper import WhisperModel
 
 from llm_utils import generate_text
 from prompts import (
@@ -240,3 +240,4 @@ if st.button("🔄 Start Over"):
         st.session_state[key] = None
 
 st.caption("Optimized for long videos, fast insights, and real creators.")
+
