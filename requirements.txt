@@ -7,3 +7,5 @@ numpy
 pillow
 requests
 python-dotenv
+ctranslate2
+faster-whisper
