@@ -2,8 +2,8 @@ import os
 import tempfile
 import streamlit as st
 import yt_dlp
-from faster_whisper import WhisperModel
 
+from faster_whisper import WhisperModel
 from llm_utils import generate_text
 from prompts import (
     twitter_prompt,
@@ -33,12 +33,15 @@ for key in [
 
 
 # ======================
-# LOAD WHISPER ONCE (CRITICAL FOR SPEED)
+# LOAD WHISPER ONCE (FAST + CLOUD SAFE)
 # ======================
 @st.cache_resource
 def load_whisper_model():
-    # Use "tiny" for maximum speed, "small" for balance
-    return whisper.load_model("tiny")
+    return WhisperModel(
+        "tiny",
+        device="cpu",
+        compute_type="int8",
+    )
 
 
 # ======================
@@ -59,7 +62,7 @@ st.caption(
 # ======================
 # AUDIO DOWNLOAD
 # ======================
-def download_audio(url):
+def download_audio(url: str) -> str:
     temp_dir = tempfile.mkdtemp()
     audio_path = os.path.join(temp_dir, "audio.%(ext)s")
 
@@ -70,10 +73,12 @@ def download_audio(url):
         "noplaylist": True,
         "retries": 3,
         "socket_timeout": 30,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-        }],
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+            }
+        ],
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -85,24 +90,23 @@ def download_audio(url):
 
 
 # ======================
-# SMART SEGMENT EXTRACTION (KEY OPTIMIZATION)
+# SMART SEGMENT EXTRACTION
 # ======================
 IMPORTANT_KEYWORDS = [
     "step", "important", "remember", "key", "mistake",
     "note", "first", "second", "finally", "example"
 ]
 
-def extract_important_segments(segments, max_chars=3000):
+
+def extract_important_segments(segments, max_chars=3000) -> str:
     collected = ""
 
     for seg in segments:
         text = seg["text"].strip()
 
-        # Skip very short filler segments
         if len(text.split()) < 6:
             continue
 
-        # Keep high-signal segments
         if any(k in text.lower() for k in IMPORTANT_KEYWORDS):
             collected += text + " "
 
@@ -113,7 +117,7 @@ def extract_important_segments(segments, max_chars=3000):
 
 
 # ======================
-# TRANSCRIPTION PIPELINE (FAST + SCALABLE)
+# TRANSCRIPTION PIPELINE
 # ======================
 if st.button("🎧 Analyze Video"):
     if not youtube_url:
@@ -125,13 +129,12 @@ if st.button("🎧 Analyze Video"):
 
             with st.spinner("Transcribing key segments only..."):
                 model = load_whisper_model()
-                result = model.transcribe(
-                    audio_path,
-                    fp16=False,
-                    verbose=False
-                )
+                segments, info = model.transcribe(audio_path)
 
-            # 🔥 CORE SPEED TRICK
+                result = {
+                    "segments": [{"text": seg.text} for seg in segments]
+                }
+
             important_text = extract_important_segments(result["segments"])
             st.session_state.raw_transcript = important_text
 
@@ -142,14 +145,13 @@ if st.button("🎧 Analyze Video"):
 
         except Exception as e:
             st.error("Something went wrong during processing.")
-            st.write(e)
+            st.exception(e)
 
 
 # ======================
-# INSIGHTS (LAZY-LOADED)
+# INSIGHTS
 # ======================
 if st.session_state.refined_transcript:
-
     st.divider()
     st.subheader("🧠 What Actually Matters")
     st.write(st.session_state.refined_transcript)
@@ -191,10 +193,9 @@ if st.session_state.refined_transcript:
 
 
 # ======================
-# SOCIAL MEDIA CONTENT (ON DEMAND)
+# SOCIAL MEDIA CONTENT
 # ======================
 if st.session_state.refined_transcript:
-
     st.divider()
     st.header("✍️ Turn This Into Content")
 
@@ -236,8 +237,7 @@ if st.session_state.refined_transcript:
 # ======================
 st.divider()
 if st.button("🔄 Start Over"):
-    for key in st.session_state:
+    for key in list(st.session_state.keys()):
         st.session_state[key] = None
 
 st.caption("Optimized for long videos, fast insights, and real creators.")
-
