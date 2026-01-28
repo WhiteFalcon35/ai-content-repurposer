@@ -1,11 +1,11 @@
 streamlit
+openai
+yt-dlp
 faster-whisper
 ctranslate2
-yt-dlp
 moviepy
 ffmpeg-python
-openai
-numpy
 pillow
+numpy
 requests
 python-dotenv
