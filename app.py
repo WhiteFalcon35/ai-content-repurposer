@@ -38,19 +38,15 @@ for k in SESSION_KEYS:
 
 
 # ============================================================
-# WHISPER (CACHED)
+# WHISPER
 # ============================================================
 @st.cache_resource
 def load_whisper_model():
-    return WhisperModel(
-        "tiny",
-        device="cpu",
-        compute_type="int8"
-    )
+    return WhisperModel("tiny", device="cpu", compute_type="int8")
 
 
 # ============================================================
-# YOUTUBE AUDIO DOWNLOAD
+# YOUTUBE AUDIO DOWNLOAD (AUDIO ONLY – SAFE)
 # ============================================================
 def download_audio(url: str) -> str:
     temp_dir = tempfile.mkdtemp()
@@ -75,7 +71,7 @@ def download_audio(url: str) -> str:
 
 
 # ============================================================
-# IMPORTANT SEGMENT LOGIC
+# IMPORTANT SEGMENTS
 # ============================================================
 IMPORTANT_KEYWORDS = [
     "step", "important", "remember", "key", "mistake",
@@ -98,7 +94,7 @@ def extract_important_segments(segments: List[Dict], max_chars=3000) -> str:
 
 
 # ============================================================
-# FRAME EXTRACTION
+# FRAME EXTRACTION (UPLOADS ONLY)
 # ============================================================
 def extract_frame(video_path: str, timestamp: float, out_path: str):
     subprocess.run(
@@ -158,8 +154,8 @@ max_frames = st.slider(
 )
 
 st.info(
-    "If a YouTube video can’t be downloaded (private / age-restricted), "
-    "upload the file directly."
+    "📌 Screenshots are available only for uploaded video files. "
+    "YouTube links are analyzed via audio only."
 )
 
 
@@ -173,19 +169,23 @@ if st.button("🚀 Analyze Video"):
         st.stop()
 
     try:
-        # ---------------- SOURCE ----------------
+        # -------- SOURCE --------
         if uploaded_file:
             suffix = os.path.splitext(uploaded_file.name)[1]
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(uploaded_file.read())
-                video_path = tmp.name
-                audio_path = tmp.name
+                file_path = tmp.name
+
+            is_video = suffix.lower() in [".mp4", ".mov", ".mkv"]
+            audio_path = file_path
+            video_path = file_path if is_video else None
+
         else:
             with st.spinner("Downloading audio from YouTube..."):
                 audio_path = download_audio(youtube_url)
-                video_path = audio_path.replace(".mp3", ".mp4")
+            video_path = None  # IMPORTANT
 
-        # ---------------- TRANSCRIPTION ----------------
+        # -------- TRANSCRIPTION --------
         with st.spinner("Transcribing with Whisper..."):
             model = load_whisper_model()
             segments, _ = model.transcribe(audio_path)
@@ -198,34 +198,35 @@ if st.button("🚀 Analyze Video"):
 
         st.session_state.segments = segment_data
 
-        # ---------------- IMPORTANT TEXT ----------------
+        # -------- IMPORTANT TEXT --------
         important_text = extract_important_segments(segment_data)
         st.session_state.raw_transcript = important_text
 
-        # ---------------- KEY FRAMES ----------------
-        with st.spinner("Extracting key screenshots..."):
-            st.session_state.frames = extract_key_frames(
-                segment_data,
-                video_path,
-                max_frames=max_frames
-            )
+        # -------- FRAMES (ONLY IF VIDEO EXISTS) --------
+        if video_path:
+            with st.spinner("Extracting key screenshots..."):
+                st.session_state.frames = extract_key_frames(
+                    segment_data,
+                    video_path,
+                    max_frames=max_frames
+                )
+        else:
+            st.session_state.frames = []
 
-        # ---------------- REFINEMENT ----------------
+        # -------- REFINEMENT --------
         with st.spinner("Generating core understanding..."):
             st.session_state.refined_transcript = generate_text(
                 refined_transcript_prompt(important_text)
             )
 
-    except Exception:
-        st.warning(
-            "🚫 This video can’t be processed automatically.\n\n"
-            "👉 Upload the video/audio file instead."
-        )
+    except Exception as e:
+        st.error("Unexpected error during processing.")
+        st.exception(e)
         st.stop()
 
 
 # ============================================================
-# IMAGE EXPLANATIONS (OPTIONAL + IMPORTANT)
+# IMAGE EXPLANATIONS
 # ============================================================
 if st.session_state.frames:
     st.divider()
@@ -243,8 +244,8 @@ At this moment, the speaker is saying:
 {frame['text']}
 
 Explain what the image represents.
-Explain it in very simple language.
-Explain why it matters in the video.
+Explain it simply.
+Explain why it matters.
 Limit to 4–5 sentences.
 """
             )
@@ -276,18 +277,6 @@ if st.session_state.refined_transcript:
             application_prompt(st.session_state.refined_transcript)
         )
 
-    if st.session_state.takeaways:
-        st.write("### 💡 Key Insights")
-        st.write(st.session_state.takeaways)
-
-    if st.session_state.mistakes:
-        st.write("### 🚫 Common Mistakes")
-        st.write(st.session_state.mistakes)
-
-    if st.session_state.application:
-        st.write("### 🛠️ Practical Application")
-        st.write(st.session_state.application)
-
 
 # ============================================================
 # SOCIAL CONTENT
@@ -310,15 +299,6 @@ if st.session_state.refined_transcript:
         st.session_state.reel_content = generate_text(
             reel_prompt(st.session_state.refined_transcript)
         )
-
-    if st.session_state.twitter_content:
-        st.text_area("Twitter/X", st.session_state.twitter_content, height=220)
-
-    if st.session_state.linkedin_content:
-        st.text_area("LinkedIn", st.session_state.linkedin_content, height=220)
-
-    if st.session_state.reel_content:
-        st.text_area("Reels", st.session_state.reel_content, height=150)
 
 
 # ============================================================
