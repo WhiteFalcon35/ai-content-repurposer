@@ -1,7 +1,9 @@
 import os
 import tempfile
+import subprocess
 import streamlit as st
 import yt_dlp
+from typing import List, Dict
 
 from faster_whisper import WhisperModel
 from llm_utils import generate_text
@@ -15,40 +17,48 @@ from prompts import (
     application_prompt,
 )
 
-# ======================
-# SESSION STATE INIT
-# ======================
-for key in [
+# ============================================================
+# SESSION STATE
+# ============================================================
+SESSION_KEYS = [
+    "segments",
     "raw_transcript",
     "refined_transcript",
+    "frames",
     "takeaways",
     "mistakes",
     "application",
     "twitter_content",
     "linkedin_content",
     "reel_content",
-]:
-    st.session_state.setdefault(key, None)
+]
+
+for k in SESSION_KEYS:
+    st.session_state.setdefault(k, None)
 
 
-# ======================
-# LOAD WHISPER
-# ======================
+# ============================================================
+# WHISPER (CACHED)
+# ============================================================
 @st.cache_resource
 def load_whisper_model():
-    return WhisperModel("tiny", device="cpu", compute_type="int8")
+    return WhisperModel(
+        "tiny",
+        device="cpu",
+        compute_type="int8"
+    )
 
 
-# ======================
-# DOWNLOAD AUDIO
-# ======================
+# ============================================================
+# YOUTUBE AUDIO DOWNLOAD
+# ============================================================
 def download_audio(url: str) -> str:
     temp_dir = tempfile.mkdtemp()
-    output = os.path.join(temp_dir, "audio.%(ext)s")
+    outtmpl = os.path.join(temp_dir, "audio.%(ext)s")
 
     ydl_opts = {
         "format": "bestaudio/best",
-        "outtmpl": output,
+        "outtmpl": outtmpl,
         "quiet": True,
         "noplaylist": True,
         "postprocessors": [{
@@ -59,80 +69,149 @@ def download_audio(url: str) -> str:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        file_path = ydl.prepare_filename(info)
-        return file_path.rsplit(".", 1)[0] + ".mp3"
+        path = ydl.prepare_filename(info)
+
+    return path.rsplit(".", 1)[0] + ".mp3"
 
 
-# ======================
-# IMPORTANT SEGMENTS
-# ======================
+# ============================================================
+# IMPORTANT SEGMENT LOGIC
+# ============================================================
 IMPORTANT_KEYWORDS = [
     "step", "important", "remember", "key", "mistake",
-    "note", "first", "second", "finally", "example"
+    "note", "first", "second", "finally", "example",
+    "diagram", "chart", "figure"
 ]
 
-def extract_important_segments(segments, max_chars=3000):
-    collected = ""
-    for seg in segments:
-        text = seg["text"].strip()
-        if len(text.split()) < 6:
+
+def extract_important_segments(segments: List[Dict], max_chars=3000) -> str:
+    text = ""
+    for s in segments:
+        t = s["text"].strip()
+        if len(t.split()) < 6:
             continue
-        if any(k in text.lower() for k in IMPORTANT_KEYWORDS):
-            collected += text + " "
-        if len(collected) >= max_chars:
+        if any(k in t.lower() for k in IMPORTANT_KEYWORDS):
+            text += t + " "
+        if len(text) >= max_chars:
             break
-    return collected.strip()
+    return text.strip()
 
 
-# ======================
+# ============================================================
+# FRAME EXTRACTION
+# ============================================================
+def extract_frame(video_path: str, timestamp: float, out_path: str):
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-ss", str(timestamp),
+            "-i", video_path,
+            "-frames:v", "1",
+            "-q:v", "2",
+            out_path,
+            "-y",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def extract_key_frames(
+    segments: List[Dict],
+    video_path: str,
+    max_frames=3
+) -> List[Dict]:
+    frames = []
+
+    for i, s in enumerate(segments):
+        if any(k in s["text"].lower() for k in IMPORTANT_KEYWORDS):
+            frame_path = f"frame_{i}.jpg"
+            extract_frame(video_path, s["start"], frame_path)
+            frames.append({
+                "path": frame_path,
+                "text": s["text"],
+                "start": s["start"],
+            })
+        if len(frames) >= max_frames:
+            break
+
+    return frames
+
+
+# ============================================================
 # UI
-# ======================
-st.title("AI Content Repurposer")
-st.caption("Turn long videos into fast, useful insights")
+# ============================================================
+st.title("🎥 AI Video Understanding Tool")
+st.caption("From long videos → transcripts → insights → visuals")
 
-youtube_url = st.text_input("YouTube video link (optional)")
+youtube_url = st.text_input("YouTube link (optional)")
 uploaded_file = st.file_uploader(
     "Or upload a video/audio file",
     type=["mp4", "mp3", "wav", "m4a", "mov"]
 )
 
+max_frames = st.slider(
+    "How many key screenshots to extract?",
+    min_value=1,
+    max_value=5,
+    value=3
+)
+
 st.info(
-    "If a YouTube video can’t be downloaded due to restrictions, "
-    "upload the video or audio file directly."
+    "If a YouTube video can’t be downloaded (private / age-restricted), "
+    "upload the file directly."
 )
 
 
-# ======================
-# MAIN PIPELINE (ONE BUTTON)
-# ======================
-if st.button("🎧 Analyze Video"):
+# ============================================================
+# MAIN PIPELINE
+# ============================================================
+if st.button("🚀 Analyze Video"):
 
     if not youtube_url and not uploaded_file:
         st.error("Please provide a YouTube link or upload a file.")
         st.stop()
 
     try:
-        # -------- SOURCE --------
+        # ---------------- SOURCE ----------------
         if uploaded_file:
-            with st.spinner("Processing uploaded file..."):
-                suffix = os.path.splitext(uploaded_file.name)[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(uploaded_file.read())
-                    audio_path = tmp.name
+            suffix = os.path.splitext(uploaded_file.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded_file.read())
+                video_path = tmp.name
+                audio_path = tmp.name
         else:
             with st.spinner("Downloading audio from YouTube..."):
                 audio_path = download_audio(youtube_url)
+                video_path = audio_path.replace(".mp3", ".mp4")
 
-        # -------- TRANSCRIBE --------
-        with st.spinner("Transcribing key segments..."):
+        # ---------------- TRANSCRIPTION ----------------
+        with st.spinner("Transcribing with Whisper..."):
             model = load_whisper_model()
             segments, _ = model.transcribe(audio_path)
-            result = {"segments": [{"text": s.text} for s in segments]}
 
-        important_text = extract_important_segments(result["segments"])
+            segment_data = [{
+                "text": s.text,
+                "start": s.start,
+                "end": s.end,
+            } for s in segments]
+
+        st.session_state.segments = segment_data
+
+        # ---------------- IMPORTANT TEXT ----------------
+        important_text = extract_important_segments(segment_data)
         st.session_state.raw_transcript = important_text
 
-        with st.spinner("Extracting what matters..."):
+        # ---------------- KEY FRAMES ----------------
+        with st.spinner("Extracting key screenshots..."):
+            st.session_state.frames = extract_key_frames(
+                segment_data,
+                video_path,
+                max_frames=max_frames
+            )
+
+        # ---------------- REFINEMENT ----------------
+        with st.spinner("Generating core understanding..."):
             st.session_state.refined_transcript = generate_text(
                 refined_transcript_prompt(important_text)
             )
@@ -140,55 +219,82 @@ if st.button("🎧 Analyze Video"):
     except Exception:
         st.warning(
             "🚫 This video can’t be processed automatically.\n\n"
-            "👉 Please upload the video or audio file instead."
+            "👉 Upload the video/audio file instead."
         )
         st.stop()
 
 
-# ======================
+# ============================================================
+# IMAGE EXPLANATIONS (OPTIONAL + IMPORTANT)
+# ============================================================
+if st.session_state.frames:
+    st.divider()
+    st.subheader("🖼️ Key Visual Moments")
+
+    for idx, frame in enumerate(st.session_state.frames, start=1):
+        st.image(frame["path"], caption=f"Moment {idx}", use_column_width=True)
+
+        with st.expander("Explain this image"):
+            explanation = generate_text(
+                f"""
+This image comes from a video.
+
+At this moment, the speaker is saying:
+{frame['text']}
+
+Explain what the image represents.
+Explain it in very simple language.
+Explain why it matters in the video.
+Limit to 4–5 sentences.
+"""
+            )
+            st.write(explanation)
+
+
+# ============================================================
 # INSIGHTS
-# ======================
+# ============================================================
 if st.session_state.refined_transcript:
     st.divider()
     st.subheader("🧠 What Actually Matters")
     st.write(st.session_state.refined_transcript)
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    if col1.button("💡 Key Insights"):
+    if c1.button("💡 Key Insights"):
         st.session_state.takeaways = generate_text(
             key_takeaways_prompt(st.session_state.refined_transcript)
         )
 
-    if col2.button("🚫 Common Mistakes"):
+    if c2.button("🚫 Common Mistakes"):
         st.session_state.mistakes = generate_text(
             mistakes_prompt(st.session_state.refined_transcript)
         )
 
-    if col3.button("🛠️ Practical Application"):
+    if c3.button("🛠️ Practical Application"):
         st.session_state.application = generate_text(
             application_prompt(st.session_state.refined_transcript)
         )
 
     if st.session_state.takeaways:
-        st.subheader("💡 Key Insights")
+        st.write("### 💡 Key Insights")
         st.write(st.session_state.takeaways)
 
     if st.session_state.mistakes:
-        st.subheader("🚫 Where People Go Wrong")
+        st.write("### 🚫 Common Mistakes")
         st.write(st.session_state.mistakes)
 
     if st.session_state.application:
-        st.subheader("🛠️ Practical Application")
+        st.write("### 🛠️ Practical Application")
         st.write(st.session_state.application)
 
 
-# ======================
+# ============================================================
 # SOCIAL CONTENT
-# ======================
+# ============================================================
 if st.session_state.refined_transcript:
     st.divider()
-    st.header("✍️ Turn This Into Content")
+    st.header("✍️ Repurpose as Content")
 
     if st.button("🐦 Twitter Thread"):
         st.session_state.twitter_content = generate_text(
@@ -215,9 +321,9 @@ if st.session_state.refined_transcript:
         st.text_area("Reels", st.session_state.reel_content, height=150)
 
 
-# ======================
+# ============================================================
 # RESET
-# ======================
+# ============================================================
 st.divider()
 if st.button("🔄 Start Over"):
     st.session_state.clear()
