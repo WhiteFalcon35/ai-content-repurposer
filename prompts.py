@@ -106,3 +106,16 @@ RULES:
 Content:
 {text}
 """
+
+
+def image_explanation_prompt(text):
+    return f"""
+Explain the image shown during this explanation:
+
+{text}
+
+Rules:
+- Simple language
+- 3–4 sentences
+- Explain what and why
+"""
