@@ -25,6 +25,7 @@ SESSION_KEYS = [
     "raw_transcript",
     "refined_transcript",
     "frames",
+    "image_explanations",
     "takeaways",
     "mistakes",
     "application",
@@ -36,7 +37,6 @@ SESSION_KEYS = [
 for k in SESSION_KEYS:
     st.session_state.setdefault(k, None)
 
-
 # ============================================================
 # WHISPER
 # ============================================================
@@ -44,9 +44,8 @@ for k in SESSION_KEYS:
 def load_whisper_model():
     return WhisperModel("tiny", device="cpu", compute_type="int8")
 
-
 # ============================================================
-# YOUTUBE AUDIO DOWNLOAD (AUDIO ONLY – SAFE)
+# YOUTUBE AUDIO (BEST-EFFORT ONLY)
 # ============================================================
 def download_audio(url: str) -> str:
     temp_dir = tempfile.mkdtemp()
@@ -57,6 +56,7 @@ def download_audio(url: str) -> str:
         "outtmpl": outtmpl,
         "quiet": True,
         "noplaylist": True,
+        "retries": 2,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
@@ -69,7 +69,6 @@ def download_audio(url: str) -> str:
 
     return path.rsplit(".", 1)[0] + ".mp3"
 
-
 # ============================================================
 # IMPORTANT SEGMENTS
 # ============================================================
@@ -78,7 +77,6 @@ IMPORTANT_KEYWORDS = [
     "note", "first", "second", "finally", "example",
     "diagram", "chart", "figure"
 ]
-
 
 def extract_important_segments(segments: List[Dict], max_chars=3000) -> str:
     text = ""
@@ -92,218 +90,140 @@ def extract_important_segments(segments: List[Dict], max_chars=3000) -> str:
             break
     return text.strip()
 
-
 # ============================================================
-# FRAME EXTRACTION (UPLOADS ONLY)
+# FRAME EXTRACTION (VIDEO FILES ONLY)
 # ============================================================
 def extract_frame(video_path: str, timestamp: float, out_path: str):
     subprocess.run(
         [
-            "ffmpeg",
-            "-ss", str(timestamp),
-            "-i", video_path,
-            "-frames:v", "1",
-            "-q:v", "2",
-            out_path,
-            "-y",
+            "ffmpeg", "-ss", str(timestamp), "-i", video_path,
+            "-frames:v", "1", "-q:v", "2", out_path, "-y"
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
-
-def extract_key_frames(
-    segments: List[Dict],
-    video_path: str,
-    max_frames=3
-) -> List[Dict]:
+def extract_key_frames(segments, video_path, max_frames=3):
     frames = []
-
     for i, s in enumerate(segments):
         if any(k in s["text"].lower() for k in IMPORTANT_KEYWORDS):
-            frame_path = f"frame_{i}.jpg"
-            extract_frame(video_path, s["start"], frame_path)
-            frames.append({
-                "path": frame_path,
-                "text": s["text"],
-                "start": s["start"],
-            })
+            frame = f"frame_{i}.jpg"
+            extract_frame(video_path, s["start"], frame)
+            frames.append({"path": frame, "text": s["text"]})
         if len(frames) >= max_frames:
             break
-
     return frames
-
 
 # ============================================================
 # UI
 # ============================================================
-st.title("🎥 AI Video Understanding Tool")
-st.caption("From long videos → transcripts → insights → visuals")
+st.title("🎥 AI Video & Image Understanding Tool")
 
-youtube_url = st.text_input("YouTube link (optional)")
-uploaded_file = st.file_uploader(
-    "Or upload a video/audio file",
-    type=["mp4", "mp3", "wav", "m4a", "mov"]
+youtube_url = st.text_input("YouTube link (best-effort)")
+uploaded_video = st.file_uploader(
+    "Upload video/audio/subtitles",
+    type=["mp4", "mp3", "wav", "m4a", "srt", "vtt"]
 )
 
-max_frames = st.slider(
-    "How many key screenshots to extract?",
-    min_value=1,
-    max_value=5,
-    value=3
+uploaded_images = st.file_uploader(
+    "Upload image(s) to explain",
+    type=["png", "jpg", "jpeg"],
+    accept_multiple_files=True
 )
 
-st.info(
-    "📌 Screenshots are available only for uploaded video files. "
-    "YouTube links are analyzed via audio only."
-)
+max_frames = st.slider("Screenshots from video", 1, 5, 3)
 
+with st.expander("⚠️ If YouTube download fails"):
+    st.markdown("""
+Use a manual downloader (e.g. y2mate or VLC),
+then upload the MP4 / MP3 / subtitle file here.
+""")
 
 # ============================================================
 # MAIN PIPELINE
 # ============================================================
-if st.button("🚀 Analyze Video"):
-
-    if not youtube_url and not uploaded_file:
-        st.error("Please provide a YouTube link or upload a file.")
-        st.stop()
+if st.button("🚀 Analyze"):
 
     try:
-        # -------- SOURCE --------
-        if uploaded_file:
-            suffix = os.path.splitext(uploaded_file.name)[1]
+        segments = []
+
+        # -------- SUBTITLES UPLOAD --------
+        if uploaded_video and uploaded_video.name.endswith((".srt", ".vtt")):
+            text = uploaded_video.read().decode("utf-8", errors="ignore")
+            st.session_state.raw_transcript = text
+
+        # -------- VIDEO / AUDIO UPLOAD --------
+        elif uploaded_video:
+            suffix = os.path.splitext(uploaded_video.name)[1]
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(uploaded_file.read())
-                file_path = tmp.name
+                tmp.write(uploaded_video.read())
+                path = tmp.name
 
-            is_video = suffix.lower() in [".mp4", ".mov", ".mkv"]
-            audio_path = file_path
-            video_path = file_path if is_video else None
-
-        else:
-            with st.spinner("Downloading audio from YouTube..."):
-                audio_path = download_audio(youtube_url)
-            video_path = None  # IMPORTANT
-
-        # -------- TRANSCRIPTION --------
-        with st.spinner("Transcribing with Whisper..."):
             model = load_whisper_model()
-            segments, _ = model.transcribe(audio_path)
+            segs, _ = model.transcribe(path)
+            segments = [{"text": s.text, "start": s.start} for s in segs]
 
-            segment_data = [{
-                "text": s.text,
-                "start": s.start,
-                "end": s.end,
-            } for s in segments]
+            st.session_state.raw_transcript = extract_important_segments(segments)
 
-        st.session_state.segments = segment_data
-
-        # -------- IMPORTANT TEXT --------
-        important_text = extract_important_segments(segment_data)
-        st.session_state.raw_transcript = important_text
-
-        # -------- FRAMES (ONLY IF VIDEO EXISTS) --------
-        if video_path:
-            with st.spinner("Extracting key screenshots..."):
+            if suffix.lower() in [".mp4", ".mov", ".mkv"]:
                 st.session_state.frames = extract_key_frames(
-                    segment_data,
-                    video_path,
-                    max_frames=max_frames
+                    segments, path, max_frames
                 )
-        else:
-            st.session_state.frames = []
+
+        # -------- YOUTUBE --------
+        elif youtube_url:
+            audio_path = download_audio(youtube_url)
+            model = load_whisper_model()
+            segs, _ = model.transcribe(audio_path)
+            segments = [{"text": s.text, "start": s.start} for s in segs]
+            st.session_state.raw_transcript = extract_important_segments(segments)
 
         # -------- REFINEMENT --------
-        with st.spinner("Generating core understanding..."):
-            st.session_state.refined_transcript = generate_text(
-                refined_transcript_prompt(important_text)
-            )
+        st.session_state.refined_transcript = generate_text(
+            refined_transcript_prompt(st.session_state.raw_transcript)
+        )
 
     except Exception as e:
-        st.error("Unexpected error during processing.")
+        st.error("Processing failed. Please upload files manually.")
         st.exception(e)
-        st.stop()
-
 
 # ============================================================
-# IMAGE EXPLANATIONS
+# IMAGE EXPLANATION (UPLOADED IMAGES)
+# ============================================================
+if uploaded_images:
+    st.divider()
+    st.subheader("🖼️ Image Explanations")
+
+    for img in uploaded_images:
+        st.image(img)
+        explanation = generate_text(
+            "Explain this image in simple terms for a beginner."
+        )
+        st.write(explanation)
+
+# ============================================================
+# VIDEO FRAMES
 # ============================================================
 if st.session_state.frames:
     st.divider()
-    st.subheader("🖼️ Key Visual Moments")
+    st.subheader("🎞️ Video Screenshots")
 
-    for idx, frame in enumerate(st.session_state.frames, start=1):
-        st.image(frame["path"], caption=f"Moment {idx}", use_column_width=True)
-
-        with st.expander("Explain this image"):
-            explanation = generate_text(
-                f"""
-This image comes from a video.
-
-At this moment, the speaker is saying:
-{frame['text']}
-
-Explain what the image represents.
-Explain it simply.
-Explain why it matters.
-Limit to 4–5 sentences.
-"""
-            )
-            st.write(explanation)
-
+    for f in st.session_state.frames:
+        st.image(f["path"])
+        st.write(generate_text(
+            f"Explain this image based on context: {f['text']}"
+        ))
 
 # ============================================================
 # INSIGHTS
 # ============================================================
 if st.session_state.refined_transcript:
     st.divider()
-    st.subheader("🧠 What Actually Matters")
     st.write(st.session_state.refined_transcript)
-
-    c1, c2, c3 = st.columns(3)
-
-    if c1.button("💡 Key Insights"):
-        st.session_state.takeaways = generate_text(
-            key_takeaways_prompt(st.session_state.refined_transcript)
-        )
-
-    if c2.button("🚫 Common Mistakes"):
-        st.session_state.mistakes = generate_text(
-            mistakes_prompt(st.session_state.refined_transcript)
-        )
-
-    if c3.button("🛠️ Practical Application"):
-        st.session_state.application = generate_text(
-            application_prompt(st.session_state.refined_transcript)
-        )
-
-
-# ============================================================
-# SOCIAL CONTENT
-# ============================================================
-if st.session_state.refined_transcript:
-    st.divider()
-    st.header("✍️ Repurpose as Content")
-
-    if st.button("🐦 Twitter Thread"):
-        st.session_state.twitter_content = generate_text(
-            twitter_prompt(st.session_state.refined_transcript)
-        )
-
-    if st.button("💼 LinkedIn Post"):
-        st.session_state.linkedin_content = generate_text(
-            linkedin_prompt(st.session_state.refined_transcript)
-        )
-
-    if st.button("🎥 Reel Hooks"):
-        st.session_state.reel_content = generate_text(
-            reel_prompt(st.session_state.refined_transcript)
-        )
-
 
 # ============================================================
 # RESET
 # ============================================================
 st.divider()
-if st.button("🔄 Start Over"):
+if st.button("🔄 Reset"):
     st.session_state.clear()
